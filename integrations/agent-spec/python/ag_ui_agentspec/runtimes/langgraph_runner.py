@@ -41,7 +41,9 @@ def prepare_langgraph_agent_inputs(input_data: RunAgentInput) -> List[Dict[str, 
     return messages_to_return
 
 
-async def filter_only_new_messages(agent, thread_id: str, input_messages: list[dict]) -> list[dict]:
+async def filter_only_new_messages(
+    agent: CompiledStateGraph, thread_id: str, input_messages: list[dict]
+) -> list[dict]:
     config = RunnableConfig({"configurable": {"thread_id": thread_id}})
     state_snapshot = await agent.aget_state(config)
     existing_messages = state_snapshot.values.get("messages", []) or []
