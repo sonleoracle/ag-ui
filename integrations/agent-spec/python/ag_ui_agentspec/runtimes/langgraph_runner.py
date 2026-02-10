@@ -17,6 +17,7 @@ async def run_langgraph_agent(agent: CompiledStateGraph, input_data: RunAgentInp
     try:
         async for _ in agent.astream({"messages": input_messages}, stream_mode="messages", config=config):
             pass
+        # await agent.ainvoke({"messages": input_messages}, config=config)
     except Exception as e:
         print(f"{repr(e)}{traceback.format_exc()}")
         raise RuntimeError(f"LangGraph agent crashed with error: {repr(e)}\n\nTraceback: {traceback.format_exc()}")

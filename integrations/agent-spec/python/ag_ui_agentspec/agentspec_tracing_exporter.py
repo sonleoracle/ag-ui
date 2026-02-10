@@ -21,6 +21,7 @@ import os
 import json
 import uuid
 from contextvars import ContextVar
+import logging
 from typing import Any, Dict, List
 
 # AG‑UI Python SDK (events)
@@ -53,6 +54,7 @@ from pyagentspec.tracing.spans.span import Span
 # ContextVar used to bridge events into the FastAPI endpoint queue. The server
 # should set this per request to an asyncio.Queue that receives AG‑UI events.
 EVENT_QUEUE = ContextVar("AG_UI_EVENT_QUEUE", default=None)
+logger = logging.getLogger("ag_ui_agentspec.tracing")
 
 
 class AgUiSpanProcessor(SpanProcessor):
@@ -84,7 +86,7 @@ class AgUiSpanProcessor(SpanProcessor):
             raise RuntimeError("AG-UI event queue is not set")
         queue.put_nowait(event_obj)
         if self._debug:
-            print("[AGUI DEBUG]" + str(event_obj))
+            logger.info("AGUI DEBUG event=%s payload=%s", type(event_obj).__name__, event_obj.model_dump())
 
     async def _aemit(self, event_obj) -> None:
         queue = EVENT_QUEUE.get()
@@ -92,7 +94,7 @@ class AgUiSpanProcessor(SpanProcessor):
             raise RuntimeError("AG-UI event queue is not set")
         await queue.put(event_obj)
         if self._debug:
-            print("[AGUI DEBUG]" + str(event_obj))
+            logger.info("AGUI DEBUG event=%s payload=%s", type(event_obj).__name__, event_obj.model_dump())
 
     @property
     def _run_started_event(self):
@@ -207,15 +209,29 @@ class AgUiSpanProcessor(SpanProcessor):
                             )
                         )
                     self._llm_chunks_seen[span.id] = True
-                # if a tool_call was not streamed, we emit it here
+                # if a tool_call was not streamed, emit a single ToolCallResultEvent (not a chunk)
+                # Normalize arguments to a JSON string so frontends can JSON.parse() reliably
                 for tool_call in event.tool_calls:
                     if tool_call.call_id not in self._started_tool_calls:
+                        args = tool_call.arguments
+                        args_str: str
+                        if isinstance(args, (dict, list)):
+                            args_str = json.dumps(args, ensure_ascii=False)
+                        elif isinstance(args, str):
+                            if jsonable(args):
+                                args_str = args
+                            else:
+                                parsed = ast.literal_eval(args)
+                                args_str = json.dumps(parsed)
+                        else:
+                            args_str = json.dumps(args, default=str)
+
                         events.append(
                             ToolCallChunkEvent(
                                 tool_call_id=tool_call.call_id,
                                 parent_message_id=message_id,
                                 tool_call_name=tool_call.tool_name,
-                                delta=tool_call.arguments,
+                                delta=args_str,
                             )
                         )
                         self._started_tool_calls[tool_call.call_id] = {"message_id": message_id}
