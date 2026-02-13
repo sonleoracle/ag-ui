@@ -1,5 +1,6 @@
-from typing import Any, Dict, List
+import logging
 import traceback
+from typing import Any, Dict, List
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
@@ -7,10 +8,13 @@ from langgraph.graph.state import CompiledStateGraph
 from ag_ui.core import RunAgentInput
 from ag_ui_agentspec.agentspec_tracing_exporter import EVENT_QUEUE
 
+logger = logging.getLogger("ag_ui_agentspec.tracing")
 
 async def run_langgraph_agent(agent: CompiledStateGraph, input_data: RunAgentInput) -> None:
+    logger.info("RAW INPUTS: %s", input_data)
     input_messages = prepare_langgraph_agent_inputs(input_data)
     input_messages = await filter_only_new_messages(agent, input_data.thread_id, input_messages)
+    logger.info("LANGGRAPH MESSAGES %s", input_messages)
     config = RunnableConfig({"configurable": {"thread_id": input_data.thread_id}})
     current_queue = EVENT_QUEUE.get()
     token = EVENT_QUEUE.set(current_queue)
@@ -19,7 +23,7 @@ async def run_langgraph_agent(agent: CompiledStateGraph, input_data: RunAgentInp
             pass
         # await agent.ainvoke({"messages": input_messages}, config=config)
     except Exception as e:
-        print(f"{repr(e)}{traceback.format_exc()}")
+        logger.error(f"ERROR during agent execution: {repr(e)}{traceback.format_exc()}")
         raise RuntimeError(f"LangGraph agent crashed with error: {repr(e)}\n\nTraceback: {traceback.format_exc()}")
     finally:
         EVENT_QUEUE.reset(token)

@@ -20,9 +20,11 @@ import ast
 import os
 import json
 import uuid
-from contextvars import ContextVar
+import traceback
 import logging
+from contextvars import ContextVar
 from typing import Any, Dict, List
+from json_repair import repair_json
 
 # AG‑UI Python SDK (events)
 from ag_ui.core.events import (
@@ -209,29 +211,21 @@ class AgUiSpanProcessor(SpanProcessor):
                             )
                         )
                     self._llm_chunks_seen[span.id] = True
-                # if a tool_call was not streamed, emit a single ToolCallResultEvent (not a chunk)
+                # if a tool_call was not streamed, emit a single ToolCallChunkEvent
                 # Normalize arguments to a JSON string so frontends can JSON.parse() reliably
                 for tool_call in event.tool_calls:
                     if tool_call.call_id not in self._started_tool_calls:
-                        args = tool_call.arguments
-                        args_str: str
-                        if isinstance(args, (dict, list)):
-                            args_str = json.dumps(args, ensure_ascii=False)
-                        elif isinstance(args, str):
-                            if jsonable(args):
-                                args_str = args
-                            else:
-                                parsed = ast.literal_eval(args)
-                                args_str = json.dumps(parsed)
-                        else:
-                            args_str = json.dumps(args, default=str)
+                        args_dict = json.loads(tool_call.arguments)
+                        if isinstance(args_dict, dict) and (a2ui_json := args_dict.get("a2ui_json")):
+                            args_dict["a2ui_json"] = repair_a2ui_json(a2ui_json)
+                        tool_call.arguments = json.dumps(args_dict)
 
                         events.append(
                             ToolCallChunkEvent(
                                 tool_call_id=tool_call.call_id,
                                 parent_message_id=message_id,
                                 tool_call_name=tool_call.tool_name,
-                                delta=args_str,
+                                delta=tool_call.arguments,
                             )
                         )
                         self._started_tool_calls[tool_call.call_id] = {"message_id": message_id}
@@ -251,7 +245,7 @@ class AgUiSpanProcessor(SpanProcessor):
                     tool_call_id = span.description.replace("tcid__", "")
                     self._tool_run_id_to_tool_call_id[event.request_id] = tool_call_id
             case ToolExecutionResponse():
-                tool_call_id = self._tool_run_id_to_tool_call_id[event.request_id]
+                tool_call_id = self._tool_run_id_to_tool_call_id[event.request_id] if self._runtime == "langgraph" else event.request_id
                 message_id = self._started_tool_calls[tool_call_id]["message_id"]
                 content = _normalize_tool_output(event.outputs)
                 events.append(
@@ -264,13 +258,29 @@ class AgUiSpanProcessor(SpanProcessor):
                 )
             case ExceptionRaised():
                 raise RuntimeError(
-                    "[AG-UI SpanProcessor] Exception occurred during agent execution:"
+                    "[AG-UI SpanProcessor] ExceptionRaised occurred during agent execution:"
                     + event.exception_message
-                    + f"\n\nStacktrace: {event.exception_stacktrace}"
+                    + f"\n\nStacktrace: {traceback.format_exc()}"
                 )
             case _:
                 return events
         return events
+
+
+def repair_a2ui_json(a2ui_json: Any):
+    if isinstance(a2ui_json, (list, dict)):
+        parsed = a2ui_json
+    elif isinstance(a2ui_json, str):
+        s = a2ui_json.strip()
+        try:
+            parsed = json.loads(s)              # validate/parse inner JSON
+        except json.JSONDecodeError:
+            s2 = repair_json(s)                 # <-- call repair here
+            parsed = json.loads(s2)             # re-validate after repair
+    else:
+        raise NotImplementedError(f"Unexpected type for a2ui_json: {type(a2ui_json)}")
+    # always send a valid JSON string to client
+    return json.dumps(parsed, ensure_ascii=False)
 
 
 def _escape_html(text: str) -> str:
